@@ -74,7 +74,7 @@ fi
 # Upload data and script to Google Cloud Storage
 echo -e "${YELLOW}📤 Uploading files to Google Cloud Storage...${NC}"
 echo "  • Uploading PySpark script..."
-if ! gcloud storage cp train_platform_analysis.py gs://$BUCKET_NAME/; then
+if ! gcloud storage cp train_platform_analysis_final.py gs://$BUCKET_NAME/; then
     echo -e "${RED}  ❌ Failed to upload PySpark script${NC}"
     exit 1
 fi
@@ -125,9 +125,10 @@ echo "  • Cluster: $CLUSTER_NAME"
 echo "  • Region: $REGION"
 echo ""
 
-gcloud dataproc jobs submit pyspark gs://$BUCKET_NAME/train_platform_analysis.py \
+gcloud dataproc jobs submit pyspark gs://$BUCKET_NAME/train_platform_analysis_final.py \
     --cluster=$CLUSTER_NAME \
     --region=$REGION \
+    --args="--data-path=gs://$BUCKET_NAME/data/Train_details_22122017.csv" \
     --jars=gs://spark-lib/bigquery/spark-bigquery-latest_2.12.jar
 
 echo ""
