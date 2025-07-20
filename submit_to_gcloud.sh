@@ -140,7 +140,6 @@ if [ "$CLUSTER_EXISTS" != true ]; then
         --initialization-actions=gs://$BUCKET_NAME/init-script.sh \
         --properties="spark:spark.jars.packages=org.apache.spark:spark-avro_2.12:3.1.2" \
         --optional-components=JUPYTER \
-        --enable-ip-alias \
         --max-idle=10m || {
         echo -e "${RED}❌ Failed to create cluster${NC}"
         exit 1
