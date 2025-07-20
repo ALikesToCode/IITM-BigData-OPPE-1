@@ -5,7 +5,8 @@ from pyspark.sql.functions import (
     col, when, regexp_replace, split, 
     unix_timestamp, abs as spark_abs,
     percentile_approx, expr, count, sum as spark_sum,
-    isnan, isnull, desc
+    isnan, isnull, desc, length, trim, 
+    regexp_extract, coalesce, lit
 )
 from pyspark.sql.types import IntegerType, DoubleType
 import sys
@@ -13,14 +14,83 @@ import sys
 def create_spark_session():
     """Create Spark session with appropriate configurations for Google Cloud"""
     return SparkSession.builder \
-        .appName("TrainPlatformAnalysis") \
+        .appName("TrainPlatformAnalysisRobust") \
         .config("spark.sql.adaptive.enabled", "true") \
         .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+        .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
         .getOrCreate()
 
+def is_valid_time_format(time_col):
+    """Check if time column has valid HH:MM:SS format"""
+    return time_col.rlike("^[0-9]{2}:[0-9]{2}:[0-9]{2}$")
+
+def is_valid_train_number(train_col):
+    """Check if train number is numeric and reasonable"""
+    return train_col.rlike("^[0-9]{3,6}$")
+
+def is_station_code(text_col):
+    """Check if text looks like a station code (3-4 capital letters)"""
+    return text_col.rlike("^[A-Z]{3,4}$")
+
+def is_station_name(text_col):
+    """Check if text looks like a station name (contains letters and spaces)"""
+    return text_col.rlike("^[A-Za-z][A-Za-z\\s\\.\\-'(),]+[A-Za-z\\.]$")
+
+def clean_and_validate_data(df):
+    """Clean and validate the dataset, filtering out corrupted rows"""
+    
+    print("🧹 Cleaning and validating data...")
+    
+    # 1. Filter out obvious header rows that got mixed in
+    df_clean = df.filter(col("Train No") != "Train No")
+    
+    print(f"Filtered out duplicate headers: {df.count() - df_clean.count()} rows")
+    
+    # 2. Filter out rows with invalid train numbers
+    df_clean = df_clean.filter(is_valid_train_number(col("Train No")))
+    
+    print(f"After train number validation: {df_clean.count()} rows remain")
+    
+    # 3. Filter out rows where time fields contain station codes or names
+    # (This indicates data corruption where fields got shifted)
+    df_clean = df_clean.filter(
+        ~is_station_code(col("Arrival time")) &
+        ~is_station_code(col("Departure Time")) &
+        ~is_station_name(col("Arrival time")) &
+        ~is_station_name(col("Departure Time"))
+    )
+    
+    print(f"After filtering corrupted time fields: {df_clean.count()} rows remain")
+    
+    # 4. Filter out rows with null critical fields
+    df_clean = df_clean.filter(
+        col("Train No").isNotNull() &
+        col("Station Name").isNotNull() &
+        col("Arrival time").isNotNull() &
+        col("Departure Time").isNotNull()
+    )
+    
+    print(f"After filtering null critical fields: {df_clean.count()} rows remain")
+    
+    # 5. Clean station names (remove special characters, trim spaces)
+    df_clean = df_clean.withColumn(
+        "Station Name",
+        trim(regexp_replace(col("Station Name"), "[,'\"()]", ""))
+    )
+    
+    return df_clean
+
 def time_to_seconds(time_col):
-    """Convert HH:MM:SS time format to seconds since midnight"""
-    return (
+    """Convert HH:MM:SS time format to seconds since midnight, handle bad data"""
+    return when(
+        (time_col.isNull()) | 
+        (time_col == "NA") | 
+        (time_col == "") | 
+        (length(time_col) != 8) |
+        (~is_valid_time_format(time_col)),
+        None  # Return NULL for invalid times
+    ).otherwise(
+        # Only process if format is valid
         split(time_col, ':').getItem(0).cast(IntegerType()) * 3600 +
         split(time_col, ':').getItem(1).cast(IntegerType()) * 60 +
         split(time_col, ':').getItem(2).cast(IntegerType())
@@ -54,6 +124,46 @@ def calculate_stop_duration(df):
     )
     
     return df_with_duration
+
+def validate_stop_durations(df):
+    """Additional validation on calculated stop durations"""
+    
+    # Filter out unrealistic stop durations (negative or too long)
+    df_validated = df.filter(
+        col("stop_duration_minutes").isNotNull() &
+        (col("stop_duration_minutes") >= 0) &
+        (col("stop_duration_minutes") <= 1440)  # Maximum 24 hours
+    )
+    
+    return df_validated
+
+def show_data_quality_report(original_count, df_clean, df_valid):
+    """Show comprehensive data quality report"""
+    
+    print("\n" + "="*80)
+    print("📋 DATA QUALITY REPORT")
+    print("="*80)
+    
+    clean_count = df_clean.count()
+    valid_count = df_valid.count()
+    
+    print(f"📥 Original records:           {original_count:,}")
+    print(f"🧹 After data cleaning:       {clean_count:,} ({clean_count/original_count*100:.1f}%)")
+    print(f"✅ Valid stop durations:      {valid_count:,} ({valid_count/original_count*100:.1f}%)")
+    print(f"❌ Records filtered out:      {original_count - valid_count:,} ({(original_count - valid_count)/original_count*100:.1f}%)")
+    
+    # Show reasons for filtering
+    filtering_steps = [
+        ("Data corruption/invalid formats", original_count - clean_count),
+        ("Invalid/missing time data", clean_count - valid_count),
+    ]
+    
+    print("\n📊 Filtering breakdown:")
+    for reason, count in filtering_steps:
+        if count > 0:
+            print(f"  • {reason}: {count:,} records")
+    
+    print("="*80)
 
 def get_exact_percentiles(df, percentiles):
     """Calculate exact percentiles using collect and manual calculation"""
@@ -105,37 +215,35 @@ def main():
     spark = create_spark_session()
     
     try:
-        print("Starting Train Platform Analysis...")
-        print("=" * 50)
+        print("🚀 Starting Robust Train Platform Analysis...")
+        print("=" * 60)
         
         # Read the CSV data
-        print("Reading train data...")
-        df = spark.read.option("header", "true").csv("data/Train_details_22122017.csv")
+        print("📖 Reading train data...")
+        df_raw = spark.read.option("header", "true").option("multiline", "true").csv("data/Train_details_22122017.csv")
+        original_count = df_raw.count()
         
-        print(f"Total records loaded: {df.count()}")
-        print(f"Schema:")
-        df.printSchema()
+        print(f"📊 Total records loaded: {original_count:,}")
         
-        # Show sample data
-        print("\nSample data:")
-        df.show(5, truncate=False)
+        # Clean and validate data
+        df_clean = clean_and_validate_data(df_raw)
         
         # Calculate stop durations
-        print("\nCalculating stop durations...")
-        df_with_duration = calculate_stop_duration(df)
+        print("\n⏱️ Calculating stop durations...")
+        df_with_duration = calculate_stop_duration(df_clean)
         
-        # Filter out invalid records and show statistics
-        valid_durations = df_with_duration.filter(col("stop_duration_minutes").isNotNull())
+        # Validate stop durations
+        valid_durations = validate_stop_durations(df_with_duration)
         
-        print(f"Records with valid stop durations: {valid_durations.count()}")
-        print(f"Records filtered out (start/end stations or bad data): {df.count() - valid_durations.count()}")
+        # Show data quality report
+        show_data_quality_report(original_count, df_clean, valid_durations)
         
         # Show duration statistics
-        print("\nStop duration statistics:")
+        print("\n📈 Stop duration statistics:")
         valid_durations.describe("stop_duration_minutes").show()
         
         # Show sample records with durations
-        print("\nSample records with calculated stop durations:")
+        print("\n📋 Sample records with calculated stop durations:")
         valid_durations.select(
             "Train No", "Station Name", "Arrival time", "Departure Time", "stop_duration_minutes"
         ).filter(col("stop_duration_minutes") > 0).show(10)
@@ -143,15 +251,15 @@ def main():
         # Define percentiles to calculate
         percentiles = [95, 99, 99.5, 99.95, 99.995]
         
-        print(f"\nCalculating exact percentiles: {percentiles}")
-        print("This may take a moment for exact calculation...")
+        print(f"\n🎯 Calculating exact percentiles: {percentiles}")
+        print("⚠️  This may take a moment for exact calculation...")
         
         # Get exact percentile values
         percentile_values = get_exact_percentiles(valid_durations, percentiles)
         
         # Create results table
         print("\n" + "=" * 80)
-        print("FINAL RESULTS")
+        print("🎉 FINAL RESULTS - ROBUST ANALYSIS")
         print("=" * 80)
         print(f"{'Percentile':<15} {'Stop Duration (min)':<25} {'Trains Exceeding':<20}")
         print("-" * 80)
@@ -172,26 +280,33 @@ def main():
         print("=" * 80)
         
         # Additional insights
-        print("\nAdditional Insights:")
-        print(f"• Total stations analyzed: {valid_durations.select('Station Name').distinct().count()}")
-        print(f"• Total trains analyzed: {valid_durations.select('Train No').distinct().count()}")
-        print(f"• Average stop duration: {valid_durations.agg({'stop_duration_minutes': 'avg'}).collect()[0][0]:.2f} minutes")
-        print(f"• Maximum stop duration: {valid_durations.agg({'stop_duration_minutes': 'max'}).collect()[0][0]:.2f} minutes")
-        print(f"• Minimum stop duration: {valid_durations.agg({'stop_duration_minutes': 'min'}).collect()[0][0]:.2f} minutes")
+        print("\n📊 Additional Insights:")
+        print(f"• Total stations analyzed: {valid_durations.select('Station Name').distinct().count():,}")
+        print(f"• Total trains analyzed: {valid_durations.select('Train No').distinct().count():,}")
         
-        # Show top stations by average stop duration
-        print("\nTop 10 stations by average stop duration:")
+        avg_duration = valid_durations.agg({'stop_duration_minutes': 'avg'}).collect()[0][0]
+        max_duration = valid_durations.agg({'stop_duration_minutes': 'max'}).collect()[0][0]
+        min_duration = valid_durations.agg({'stop_duration_minutes': 'min'}).collect()[0][0]
+        
+        print(f"• Average stop duration: {avg_duration:.2f} minutes")
+        print(f"• Maximum stop duration: {max_duration:.2f} minutes")
+        print(f"• Minimum stop duration: {min_duration:.2f} minutes")
+        
+        # Show top stations by total stop duration (improved calculation)
+        print("\n🏆 Top 10 stations by total stop duration:")
         station_stats = valid_durations.groupBy("Station Name") \
             .agg(
-                spark_sum("stop_duration_minutes").alias("avg_duration"),
+                spark_sum("stop_duration_minutes").alias("total_duration"),
                 count("*").alias("train_count")
             ) \
-            .filter(col("train_count") >= 5) \
-            .orderBy(desc("avg_duration"))
+            .filter(col("train_count") >= 10) \
+            .withColumn("avg_duration", col("total_duration") / col("train_count")) \
+            .orderBy(desc("total_duration"))
         
-        station_stats.show(10, truncate=False)
+        station_stats.select("Station Name", "total_duration", "train_count", "avg_duration").show(10, truncate=False)
         
-        print("\nAnalysis completed successfully!")
+        print("\n✅ Robust analysis completed successfully!")
+        print("🛡️ All data quality issues have been handled appropriately.")
         
     except Exception as e:
         print(f"Error during analysis: {str(e)}")

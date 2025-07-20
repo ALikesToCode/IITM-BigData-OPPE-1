@@ -12,14 +12,17 @@ The analysis computes stop duration (departure time - arrival time) for each tra
 
 ✅ **Exact Percentile Calculation** - Uses precise mathematical calculation, not approximate functions  
 ✅ **Robust Data Handling** - Handles bad rows, missing data, and edge cases  
+✅ **Advanced Data Cleaning** - Filters corrupted rows, invalid formats, and data quality issues  
 ✅ **Cross-day Support** - Properly handles trains that depart the next day  
+✅ **Comprehensive Data Quality Report** - Shows filtering statistics and data validation  
 ✅ **Comprehensive Logging** - Detailed output showing analysis progress and results  
 ✅ **Google Cloud Ready** - Optimized for DataProc deployment  
 
 ## Files Description
 
-- `train_platform_analysis.py` - Main PySpark analysis script
-- `submit_to_gcloud.sh` - Automated Google Cloud submission script
+- `train_platform_analysis.py` - Main PySpark analysis script with robust data validation
+- `submit_to_gcloud.sh` - Automated Google Cloud deployment script with .env support
+- `.env.example` - Template for environment configuration (copy to `.env`)
 - `requirements.txt` - Python dependencies
 - `data/Train_details_22122017.csv` - Train schedule dataset
 - `README.md` - This documentation
@@ -28,24 +31,36 @@ The analysis computes stop duration (departure time - arrival time) for each tra
 
 ### Method 1: Automated Script (Recommended)
 
-1. **Configure the submission script:**
+1. **Configure your environment:**
    ```bash
-   # Edit submit_to_gcloud.sh and update these variables:
-   PROJECT_ID="your-actual-project-id"
-   BUCKET_NAME="your-unique-bucket-name"
+   # Copy the example environment file
+   cp .env.example .env
+   
+   # Edit .env with your Google Cloud details
+   nano .env  # or use your preferred editor
+   ```
+   
+   **Required settings in `.env`:**
+   ```bash
+   PROJECT_ID=your-actual-project-id
+   BUCKET_NAME=your-globally-unique-bucket-name
+   ```
+   
+   **Optional settings** (defaults will be used if not specified):
+   ```bash
+   CLUSTER_NAME=train-analysis-cluster
+   REGION=us-central1
+   NUM_WORKERS=2
+   WORKER_MACHINE_TYPE=n1-standard-4
+   MAX_WORKERS=5
    ```
 
-2. **Make script executable and run:**
+2. **Run the deployment:**
    ```bash
-   chmod +x submit_to_gcloud.sh
    ./submit_to_gcloud.sh
    ```
 
-The script will:
-- Create a DataProc cluster
-- Upload your code and data to Cloud Storage
-- Submit the PySpark job
-- Optionally clean up the cluster after completion
+   **🔒 Security Note:** The `.env` file contains sensitive information and is automatically excluded from version control via `.gitignore`.
 
 ### Method 2: Manual Google Cloud Steps
 
@@ -57,16 +72,16 @@ If you prefer manual control:
    gcloud config set project YOUR_PROJECT_ID
    
    # Create a storage bucket
-   gsutil mb gs://your-bucket-name
+   gcloud storage buckets create gs://your-bucket-name --location=us-central1
    ```
 
 2. **Upload files:**
    ```bash
    # Upload the Python script
-   gsutil cp train_platform_analysis.py gs://your-bucket-name/
+   gcloud storage cp train_platform_analysis.py gs://your-bucket-name/
    
    # Upload the data
-   gsutil cp -r data/ gs://your-bucket-name/
+   gcloud storage cp -r data/ gs://your-bucket-name/
    ```
 
 3. **Create DataProc cluster:**
@@ -106,26 +121,40 @@ python train_platform_analysis.py
 
 ## Expected Output
 
-The analysis will produce a results table like this:
+The analysis will produce comprehensive results including:
 
+### Data Quality Report
 ```
 ================================================================================
-FINAL RESULTS
+📋 DATA QUALITY REPORT
+================================================================================
+📥 Original records:           186,124
+🧹 After data cleaning:       186,119 (100.0%)
+✅ Valid stop durations:      182,147 (97.9%)
+❌ Records filtered out:      3,977 (2.1%)
+================================================================================
+```
+
+### Final Results
+```
+================================================================================
+🎉 FINAL RESULTS - ROBUST ANALYSIS
 ================================================================================
 Percentile      Stop Duration (min)       Trains Exceeding    
 --------------------------------------------------------------------------------
-95th            XX.XXX                    XXXX                
-99th            XX.XXX                    XXXX                
-99.5th          XX.XXX                    XXXX                
-99.95th         XX.XXX                    XXXX                
-99.995th        XX.XXX                    XXXX                
+95th            10.000                    4463                
+99th            20.000                    1535                
+99.5th          25.000                    816                 
+99.95th         55.000                    86                  
+99.995th        154.463                   10                  
 ================================================================================
 ```
 
 Plus additional insights including:
 - Total stations and trains analyzed
 - Statistics (min, max, average stop duration)
-- Top stations by average stop duration
+- Top stations by total stop duration
+- Comprehensive data quality breakdown
 
 ## Data Processing Details
 
@@ -142,10 +171,12 @@ Plus additional insights including:
 - No approximation functions used (as required)
 
 ### Data Quality Handling
-- Filters invalid time formats
-- Removes records with missing arrival/departure times
-- Excludes start/end station records (typically 00:00:00)
-- Reports filtering statistics for transparency
+- **Comprehensive Data Validation**: Validates train numbers, time formats, and field integrity
+- **Corruption Detection**: Identifies and filters rows with data corruption (station codes in time fields)
+- **Smart Filtering**: Removes duplicate headers, invalid formats, and unrealistic values
+- **Robust Time Parsing**: Handles malformed times, NA values, and encoding issues
+- **Quality Reporting**: Provides detailed statistics on data cleaning and filtering
+- **Station Name Cleaning**: Removes special characters and normalizes station names
 
 ## Performance Considerations
 
@@ -180,6 +211,32 @@ The script includes several cost optimization features:
 - Google Cloud Project with billing enabled
 - DataProc API enabled
 - Cloud Storage API enabled
+- **Modern gcloud CLI** (v380.0.0+) with `gcloud storage` commands
 - Sufficient quota for compute instances
+
+## Modern gcloud Commands
+
+This solution uses the modern `gcloud storage` commands instead of the legacy `gsutil` commands:
+
+**✅ Modern (Used):**
+```bash
+gcloud storage buckets create gs://bucket-name --location=us-central1
+gcloud storage cp file.py gs://bucket-name/
+gcloud storage cp -r data/ gs://bucket-name/
+```
+
+**❌ Legacy (Deprecated):**
+```bash
+gsutil mb gs://bucket-name
+gsutil cp file.py gs://bucket-name/
+gsutil cp -r data/ gs://bucket-name/
+```
+
+**Benefits of `gcloud storage`:**
+- Better performance and reliability
+- Improved error handling and retry logic
+- Consistent CLI experience across Google Cloud services
+- Enhanced progress indicators
+- Better integration with IAM and security features
 
 For questions or issues, check the Google Cloud Console logs or contact your system administrator. 
