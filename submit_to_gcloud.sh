@@ -106,7 +106,7 @@ EOF
 # Upload initialization script
 gcloud storage cp init-script.sh gs://$BUCKET_NAME/init-script.sh
 
-# Check if cluster already exists
+# Check if target cluster already exists
 echo -e "${YELLOW}🔍 Checking if cluster exists...${NC}"
 if gcloud dataproc clusters describe $CLUSTER_NAME --region=$REGION > /dev/null 2>&1; then
     echo -e "${YELLOW}⚠️ Cluster $CLUSTER_NAME already exists${NC}"
@@ -125,15 +125,30 @@ if gcloud dataproc clusters describe $CLUSTER_NAME --region=$REGION > /dev/null 
     fi
 fi
 
+# Check for fallback cluster if target cluster doesn't exist
+if [ "$CLUSTER_EXISTS" != true ]; then
+    echo -e "${YELLOW}🔍 Checking for fallback cluster: spark-click-analysis-cluster...${NC}"
+    if gcloud dataproc clusters describe spark-click-analysis-cluster --region=$REGION > /dev/null 2>&1; then
+        echo -e "${GREEN}✅ Found existing fallback cluster: spark-click-analysis-cluster${NC}"
+        read -p "Use existing spark-click-analysis-cluster instead? (Y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+            CLUSTER_NAME="spark-click-analysis-cluster"
+            CLUSTER_EXISTS=true
+            echo -e "${GREEN}✅ Using fallback cluster: $CLUSTER_NAME${NC}"
+        fi
+    fi
+fi
+
 # Create cluster if it doesn't exist
 if [ "$CLUSTER_EXISTS" != true ]; then
     echo -e "${YELLOW}🏗️ Creating DataProc cluster with enhanced configuration...${NC}"
     gcloud dataproc clusters create $CLUSTER_NAME \
         --region=$REGION \
         --zone=${REGION}-c \
-        --master-machine-type=e2-micro \
+        --master-machine-type=n1-standard-1 \
         --master-boot-disk-size=30GB \
-        --worker-machine-type=e2-micro \
+        --worker-machine-type=n1-standard-1 \
         --worker-boot-disk-size=30GB \
         --num-workers=2 \
         --image-version=2.0-debian10 \
@@ -157,10 +172,9 @@ gcloud dataproc jobs submit pyspark \
     gs://$BUCKET_NAME/train_platform_analysis_final.py \
     --cluster=$CLUSTER_NAME \
     --region=$REGION \
-    --job-id=$JOB_ID \
-    --py-files=gs://$BUCKET_NAME/requirements.txt \
-    --properties="spark.submit.deployMode=client,spark.executor.memory=512m,spark.executor.cores=1,spark.sql.adaptive.enabled=true,spark.sql.adaptive.coalescePartitions.enabled=true" \
-    --args="--data-path=gs://$BUCKET_NAME/data/Train_details_22122017.csv" || {
+    --id=$JOB_ID \
+    --properties="spark.submit.deployMode=client,spark.executor.memory=1g,spark.executor.cores=1,spark.sql.adaptive.enabled=true,spark.sql.adaptive.coalescePartitions.enabled=true" \
+    -- --data-path=gs://$BUCKET_NAME/data/Train_details_22122017.csv || {
     echo -e "${RED}❌ Job submission failed${NC}"
     exit 1
 }
