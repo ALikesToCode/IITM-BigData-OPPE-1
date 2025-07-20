@@ -131,10 +131,10 @@ if [ "$CLUSTER_EXISTS" != true ]; then
     gcloud dataproc clusters create $CLUSTER_NAME \
         --region=$REGION \
         --zone=${REGION}-c \
-        --master-machine-type=e2-standard-4 \
-        --master-boot-disk-size=50GB \
-        --worker-machine-type=e2-standard-4 \
-        --worker-boot-disk-size=50GB \
+        --master-machine-type=e2-micro \
+        --master-boot-disk-size=30GB \
+        --worker-machine-type=e2-micro \
+        --worker-boot-disk-size=30GB \
         --num-workers=2 \
         --image-version=2.0-debian10 \
         --initialization-actions=gs://$BUCKET_NAME/init-script.sh \
@@ -159,7 +159,7 @@ gcloud dataproc jobs submit pyspark \
     --region=$REGION \
     --job-id=$JOB_ID \
     --py-files=gs://$BUCKET_NAME/requirements.txt \
-    --properties="spark.submit.deployMode=client,spark.executor.memory=4g,spark.executor.cores=2,spark.sql.adaptive.enabled=true,spark.sql.adaptive.coalescePartitions.enabled=true" \
+    --properties="spark.submit.deployMode=client,spark.executor.memory=512m,spark.executor.cores=1,spark.sql.adaptive.enabled=true,spark.sql.adaptive.coalescePartitions.enabled=true" \
     --args="--data-path=gs://$BUCKET_NAME/data/Train_details_22122017.csv" || {
     echo -e "${RED}❌ Job submission failed${NC}"
     exit 1
