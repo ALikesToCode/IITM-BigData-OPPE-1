@@ -18,7 +18,8 @@ echo "=================================================================="
 
 # Load configuration
 if [ -f ".env" ]; then
-    export $(cat .env | xargs)
+    # Load .env file while ignoring comments and empty lines
+    export $(grep -v '^#' .env | grep -v '^$' | xargs)
     echo -e "${GREEN}✅ Configuration loaded from .env${NC}"
 else
     echo -e "${RED}❌ .env file not found!${NC}"
@@ -62,7 +63,7 @@ gcloud config set project $PROJECT_ID || {
 
 # Create bucket if it doesn't exist
 echo -e "${YELLOW}📦 Setting up Cloud Storage bucket...${NC}"
-if ! gsutil ls -b gs://$BUCKET_NAME > /dev/null 2>&1; then
+if ! gcloud storage ls gs://$BUCKET_NAME > /dev/null 2>&1; then
     echo "Creating bucket: $BUCKET_NAME"
     gcloud storage buckets create gs://$BUCKET_NAME --location=$REGION || {
         echo -e "${RED}❌ Failed to create bucket${NC}"
